@@ -1,0 +1,41 @@
+# Git
+.git/
+.github/
+
+# Go build artifacts
+*.exe
+*.test
+e2e.test
+
+# Development
+.vscode/
+.idea/
+*.md
+!README.md
+
+# Test files
+e2e/
+*_test.go
+
+# Source code (we only need the binary)
+cmd/
+internal/
+pkg/
+script/
+third-party/
+docs/
+
+# Go modules (binary is statically linked)
+go.mod
+go.sum
+
+# Other
+*.yaml
+*.yml
+*.json
+!manifest.json
+Dockerfile
+.dockerignore
+.golangci.yml
+Makefile
+LICENSE

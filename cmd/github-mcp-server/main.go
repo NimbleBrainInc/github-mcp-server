@@ -88,6 +88,58 @@ var (
 			return ghmcp.RunStdioServer(stdioServerConfig)
 		},
 	}
+
+	httpCmd = &cobra.Command{
+		Use:   "http",
+		Short: "Start HTTP server",
+		Long:  `Start a server that communicates via HTTP using the Streamable HTTP transport.`,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			token := viper.GetString("personal_access_token")
+			if token == "" {
+				return errors.New("GITHUB_PERSONAL_ACCESS_TOKEN not set")
+			}
+
+			var enabledToolsets []string
+			if viper.IsSet("toolsets") {
+				if err := viper.UnmarshalKey("toolsets", &enabledToolsets); err != nil {
+					return fmt.Errorf("failed to unmarshal toolsets: %w", err)
+				}
+			}
+
+			var enabledTools []string
+			if viper.IsSet("tools") {
+				if err := viper.UnmarshalKey("tools", &enabledTools); err != nil {
+					return fmt.Errorf("failed to unmarshal tools: %w", err)
+				}
+			}
+
+			var enabledFeatures []string
+			if viper.IsSet("features") {
+				if err := viper.UnmarshalKey("features", &enabledFeatures); err != nil {
+					return fmt.Errorf("failed to unmarshal features: %w", err)
+				}
+			}
+
+			ttl := viper.GetDuration("repo-access-cache-ttl")
+			httpServerConfig := ghmcp.HTTPServerConfig{
+				Version:            version,
+				Host:               viper.GetString("host"),
+				Token:              token,
+				EnabledToolsets:    enabledToolsets,
+				EnabledTools:       enabledTools,
+				EnabledFeatures:    enabledFeatures,
+				DynamicToolsets:    viper.GetBool("dynamic_toolsets"),
+				ReadOnly:           viper.GetBool("read-only"),
+				ExportTranslations: viper.GetBool("export-translations"),
+				LogFilePath:        viper.GetString("log-file"),
+				ContentWindowSize:  viper.GetInt("content-window-size"),
+				LockdownMode:       viper.GetBool("lockdown-mode"),
+				RepoAccessCacheTTL: &ttl,
+				Port:               viper.GetInt("port"),
+			}
+			return ghmcp.RunHTTPServer(httpServerConfig)
+		},
+	}
 )
 
 func init() {
@@ -124,8 +176,13 @@ func init() {
 	_ = viper.BindPFlag("lockdown-mode", rootCmd.PersistentFlags().Lookup("lockdown-mode"))
 	_ = viper.BindPFlag("repo-access-cache-ttl", rootCmd.PersistentFlags().Lookup("repo-access-cache-ttl"))
 
+	// Add http command flags
+	httpCmd.Flags().Int("port", 8000, "Port to listen on for HTTP connections")
+	_ = viper.BindPFlag("port", httpCmd.Flags().Lookup("port"))
+
 	// Add subcommands
 	rootCmd.AddCommand(stdioCmd)
+	rootCmd.AddCommand(httpCmd)
 }
 
 func initConfig() {

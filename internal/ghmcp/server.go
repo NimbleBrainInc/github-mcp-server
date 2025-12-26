@@ -314,6 +314,51 @@ type StdioServerConfig struct {
 	RepoAccessCacheTTL *time.Duration
 }
 
+// HTTPServerConfig contains configuration for running the MCP server over HTTP.
+type HTTPServerConfig struct {
+	// Version of the server
+	Version string
+
+	// GitHub Host to target for API requests (e.g. github.com or github.enterprise.com)
+	Host string
+
+	// GitHub Token to authenticate with the GitHub API
+	Token string
+
+	// EnabledToolsets is a list of toolsets to enable
+	EnabledToolsets []string
+
+	// EnabledTools is a list of specific tools to enable (additive to toolsets)
+	EnabledTools []string
+
+	// EnabledFeatures is a list of feature flags that are enabled
+	EnabledFeatures []string
+
+	// Whether to enable dynamic toolsets
+	DynamicToolsets bool
+
+	// ReadOnly indicates if we should only register read-only tools
+	ReadOnly bool
+
+	// ExportTranslations indicates if we should export translations
+	ExportTranslations bool
+
+	// Path to the log file if not stderr
+	LogFilePath string
+
+	// Content window size
+	ContentWindowSize int
+
+	// LockdownMode indicates if we should enable lockdown mode
+	LockdownMode bool
+
+	// RepoAccessCacheTTL overrides the default TTL for repository access cache entries.
+	RepoAccessCacheTTL *time.Duration
+
+	// Port to listen on for HTTP connections
+	Port int
+}
+
 // RunStdioServer is not concurrent safe.
 func RunStdioServer(cfg StdioServerConfig) error {
 	// Create app context
@@ -388,6 +433,113 @@ func RunStdioServer(cfg StdioServerConfig) error {
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down server", "signal", "context done")
+	case err := <-errC:
+		if err != nil {
+			logger.Error("error running server", "error", err)
+			return fmt.Errorf("error running server: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// RunHTTPServer starts an HTTP server that serves the MCP protocol via Streamable HTTP.
+func RunHTTPServer(cfg HTTPServerConfig) error {
+	// Create app context
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	t, dumpTranslations := translations.TranslationHelper()
+
+	var slogHandler slog.Handler
+	var logOutput io.Writer
+	if cfg.LogFilePath != "" {
+		file, err := os.OpenFile(cfg.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			return fmt.Errorf("failed to open log file: %w", err)
+		}
+		logOutput = file
+		slogHandler = slog.NewTextHandler(logOutput, &slog.HandlerOptions{Level: slog.LevelDebug})
+	} else {
+		logOutput = os.Stderr
+		slogHandler = slog.NewTextHandler(logOutput, &slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+	logger := slog.New(slogHandler)
+	logger.Info("starting HTTP server", "version", cfg.Version, "host", cfg.Host, "port", cfg.Port, "dynamicToolsets", cfg.DynamicToolsets, "readOnly", cfg.ReadOnly, "lockdownEnabled", cfg.LockdownMode)
+
+	ghServer, err := NewMCPServer(MCPServerConfig{
+		Version:           cfg.Version,
+		Host:              cfg.Host,
+		Token:             cfg.Token,
+		EnabledToolsets:   cfg.EnabledToolsets,
+		EnabledTools:      cfg.EnabledTools,
+		EnabledFeatures:   cfg.EnabledFeatures,
+		DynamicToolsets:   cfg.DynamicToolsets,
+		ReadOnly:          cfg.ReadOnly,
+		Translator:        t,
+		ContentWindowSize: cfg.ContentWindowSize,
+		LockdownMode:      cfg.LockdownMode,
+		Logger:            logger,
+		RepoAccessTTL:     cfg.RepoAccessCacheTTL,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create MCP server: %w", err)
+	}
+
+	if cfg.ExportTranslations {
+		dumpTranslations()
+	}
+
+	// Create HTTP mux with health and MCP endpoints
+	mux := http.NewServeMux()
+
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// MCP endpoint using Streamable HTTP transport
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(r *http.Request) *mcp.Server {
+			return ghServer
+		},
+		&mcp.StreamableHTTPOptions{
+			Stateless: true,
+			Logger:    logger,
+		},
+	)
+	mux.Handle("/mcp", mcpHandler)
+
+	// Create HTTP server
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Start server in goroutine
+	errC := make(chan error, 1)
+	go func() {
+		logger.Info("listening", "addr", addr)
+		fmt.Fprintf(os.Stderr, "GitHub MCP Server running on http://0.0.0.0%s\n", addr)
+		fmt.Fprintf(os.Stderr, "  MCP endpoint: http://0.0.0.0%s/mcp\n", addr)
+		fmt.Fprintf(os.Stderr, "  Health check: http://0.0.0.0%s/health\n", addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errC <- err
+		}
+	}()
+
+	// Wait for shutdown signal
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down server", "signal", "context done")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("error shutting down server", "error", err)
+		}
 	case err := <-errC:
 		if err != nil {
 			logger.Error("error running server", "error", err)
