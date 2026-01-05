@@ -6,7 +6,6 @@
   "author": {
     "name": "GitHub (packaged by NimbleBrain Inc)"
   },
-  "repository": "https://github.com/github/github-mcp-server",
   "user_config": {
     "personal_access_token": {
       "type": "string",
