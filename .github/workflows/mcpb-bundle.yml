@@ -72,3 +72,5 @@ jobs:
       - uses: NimbleBrainInc/mcpb-pack@v2
         with:
           output: "{name}-{version}-${{ matrix.os }}-${{ matrix.arch }}.mcpb"
+          upload: ${{ github.event_name == 'release' }}
+          announce: ${{ github.event_name == 'release' }}
