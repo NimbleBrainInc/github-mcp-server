@@ -36,8 +36,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Determine version
         id: version
@@ -50,82 +49,26 @@ jobs:
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building MCPB bundle for $TAG (version $VERSION)"
 
-      - name: Download release binary
+      - name: Download binary from GoReleaser
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           ARCHIVE="github-mcp-server_${{ matrix.goreleaser_os }}_${{ matrix.goreleaser_arch }}.tar.gz"
 
-          echo "Downloading $ARCHIVE from release $TAG..."
           gh release download "$TAG" --pattern "$ARCHIVE" --dir /tmp
-
-          # Extract the binary
-          mkdir -p /tmp/extracted
-          tar -xzf "/tmp/$ARCHIVE" -C /tmp/extracted
-
-          echo "Extracted contents:"
-          ls -la /tmp/extracted
+          mkdir -p bin
+          tar -xzf "/tmp/$ARCHIVE" -C /tmp
+          cp /tmp/github-mcp-server bin/
+          chmod +x bin/github-mcp-server
 
       - name: Update manifest version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           jq --arg v "$VERSION" '.version = $v' manifest.json > manifest.tmp.json
           mv manifest.tmp.json manifest.json
-          echo "Updated manifest.json:"
-          cat manifest.json
 
-      - name: Create MCPB bundle
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BUNDLE_NAME="nimblebraininc-github-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.mcpb"
-          BUNDLE_DIR="/tmp/mcpb-bundle"
-
-          # Create bundle structure
-          mkdir -p "$BUNDLE_DIR/bin"
-
-          # Copy manifest
-          cp manifest.json "$BUNDLE_DIR/"
-
-          # Copy binary (it's in the root of the extracted archive)
-          cp /tmp/extracted/github-mcp-server "$BUNDLE_DIR/bin/"
-          chmod +x "$BUNDLE_DIR/bin/github-mcp-server"
-
-          echo "Bundle contents:"
-          ls -la "$BUNDLE_DIR"
-          ls -la "$BUNDLE_DIR/bin"
-
-          # Create the bundle (tar.gz)
-          cd "$BUNDLE_DIR"
-          tar -czvf "/tmp/$BUNDLE_NAME" .
-
-          echo "Created bundle: /tmp/$BUNDLE_NAME"
-          ls -la "/tmp/$BUNDLE_NAME"
-
-          # Calculate SHA256
-          if command -v sha256sum &> /dev/null; then
-            SHA256=$(sha256sum "/tmp/$BUNDLE_NAME" | cut -d' ' -f1)
-          else
-            SHA256=$(shasum -a 256 "/tmp/$BUNDLE_NAME" | cut -d' ' -f1)
-          fi
-          echo "SHA256: $SHA256"
-          echo "$SHA256" > "/tmp/${BUNDLE_NAME}.sha256"
-
-          # Store for upload step
-          echo "bundle_name=$BUNDLE_NAME" >> $GITHUB_ENV
-          echo "bundle_path=/tmp/$BUNDLE_NAME" >> $GITHUB_ENV
-          echo "sha256_path=/tmp/${BUNDLE_NAME}.sha256" >> $GITHUB_ENV
-
-      - name: Upload bundle to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-
-          echo "Uploading ${{ env.bundle_name }} to release $TAG..."
-          gh release upload "$TAG" "${{ env.bundle_path }}" --clobber
-          gh release upload "$TAG" "${{ env.sha256_path }}" --clobber
-
-          echo "Uploaded successfully!"
+      - uses: NimbleBrainInc/mcpb-pack@v2
+        with:
+          output: "{name}-{version}-${{ matrix.os }}-${{ matrix.arch }}.mcpb"
