@@ -1,9 +1,8 @@
-name: MCPB Bundle
+name: Build MCPB Bundle
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -12,17 +11,29 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
-  build-bundle:
-    runs-on: ubuntu-latest
+  build:
     strategy:
       matrix:
         include:
-          - arch: x86_64
-            goarch: amd64
-          - arch: arm64
-            goarch: arm64
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            goreleaser_os: Linux
+            goreleaser_arch: x86_64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            goreleaser_os: Linux
+            goreleaser_arch: arm64
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            goreleaser_os: Darwin
+            goreleaser_arch: arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
@@ -34,38 +45,19 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
           else
-            TAG="${{ github.ref_name }}"
+            TAG="${{ github.event.release.tag_name }}"
           fi
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building MCPB bundle for $TAG (version $VERSION)"
 
-      - name: Wait for GoReleaser
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          ARCHIVE="github-mcp-server_Linux_${{ matrix.arch }}.tar.gz"
-
-          echo "Waiting for GoReleaser to publish $ARCHIVE..."
-          for i in {1..30}; do
-            if gh release view "$TAG" --json assets -q ".assets[].name" 2>/dev/null | grep -q "$ARCHIVE"; then
-              echo "✅ Release asset ready"
-              exit 0
-            fi
-            echo "⏳ Waiting for release assets ($i/30)..."
-            sleep 20
-          done
-          echo "❌ Timeout waiting for release assets"
-          exit 1
-
       - name: Download release binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          ARCHIVE="github-mcp-server_Linux_${{ matrix.arch }}.tar.gz"
+          ARCHIVE="github-mcp-server_${{ matrix.goreleaser_os }}_${{ matrix.goreleaser_arch }}.tar.gz"
 
           echo "Downloading $ARCHIVE from release $TAG..."
           gh release download "$TAG" --pattern "$ARCHIVE" --dir /tmp
@@ -80,15 +72,15 @@ jobs:
       - name: Update manifest version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          # Update version in manifest.json
-          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" manifest.json
+          jq --arg v "$VERSION" '.version = $v' manifest.json > manifest.tmp.json
+          mv manifest.tmp.json manifest.json
           echo "Updated manifest.json:"
           cat manifest.json
 
       - name: Create MCPB bundle
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          BUNDLE_NAME="mcp-github-v${VERSION}-linux-${{ matrix.goarch }}.mcpb"
+          BUNDLE_NAME="nimblebraininc-github-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.mcpb"
           BUNDLE_DIR="/tmp/mcpb-bundle"
 
           # Create bundle structure
@@ -113,7 +105,11 @@ jobs:
           ls -la "/tmp/$BUNDLE_NAME"
 
           # Calculate SHA256
-          SHA256=$(sha256sum "/tmp/$BUNDLE_NAME" | cut -d' ' -f1)
+          if command -v sha256sum &> /dev/null; then
+            SHA256=$(sha256sum "/tmp/$BUNDLE_NAME" | cut -d' ' -f1)
+          else
+            SHA256=$(shasum -a 256 "/tmp/$BUNDLE_NAME" | cut -d' ' -f1)
+          fi
           echo "SHA256: $SHA256"
           echo "$SHA256" > "/tmp/${BUNDLE_NAME}.sha256"
 
